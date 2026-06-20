@@ -1,10 +1,37 @@
+# deps & build output (reinstalled / rebuilt inside the image)
 node_modules
 .next
+out
+
+# local data & databases (runtime uses the mounted volume at /app/data)
+data
 solar.db
 dev.db
 *.db
+
+# bundled reference frontend — not part of this app
+sample
+
+# version control / CI / editor / agent tooling
 .git
 .gitignore
+.github
+.vscode
+.idea
+.claude
+
+# docker
 Dockerfile
+.dockerignore
 docker-compose.yml
+
+# docs, license, logs, scratch scripts
 README.md
+README.vi.md
+LICENSE
+*.log
+test_push.js
+
+# env files (nothing in the app reads them; don't bake them into the image)
+.env
+.env.*

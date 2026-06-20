@@ -495,222 +495,404 @@ function useIsMobile() {
   return mobile;
 }
 
-// ── MobileFlow ─────────────────────────────────────────
+// ── Mobile SOC mini-chart (Battery view) ───────────────
+
+function MobileSocChart({ data, date, height = 130 }: { data: any[]; date: Date; height?: number }) {
+  const dayMs = useMemo(() => {
+    const d = date ? new Date(date) : new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }, [date]);
+  const ticks = useMemo(() => [0, 6, 12, 18, 24].map(h => dayMs + h * 3600000), [dayMs]);
+  const fmtTick = (v: number) => new Date(v).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const chartData = useMemo(
+    () => data
+      .map((d: any) => ({ t: new Date(d.timestamp).getTime(), soc: d.batterySoc != null ? +Number(d.batterySoc).toFixed(1) : undefined }))
+      .filter((d: any) => d.soc != null),
+    [data],
+  );
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
+        <defs>
+          <linearGradient id="mob-soc-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#c99318" stopOpacity={0.3} />
+            <stop offset="100%" stopColor="#c99318" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--sf-line)" vertical={false} />
+        <XAxis
+          dataKey="t" type="number" scale="time"
+          domain={[dayMs, dayMs + 86400000]} ticks={ticks} tickFormatter={fmtTick}
+          tick={{ fontSize: 8, fill: 'var(--sf-ink-3)', fontFamily: 'JetBrains Mono,monospace' }}
+          tickLine={false} axisLine={{ stroke: 'var(--sf-line)' }}
+        />
+        <YAxis
+          domain={[0, 100]}
+          tick={{ fontSize: 8, fill: 'var(--sf-ink-3)', fontFamily: 'JetBrains Mono,monospace' }}
+          axisLine={false} tickLine={false} width={30} tickFormatter={(v: any) => `${v}%`}
+        />
+        <Tooltip
+          cursor={{ stroke: 'var(--sf-ink)', strokeWidth: 0.8, strokeDasharray: '4 3' }}
+          contentStyle={{ background: 'var(--sf-panel)', border: '1px solid var(--sf-line)', borderRadius: 4, fontSize: 10, padding: '4px 8px' }}
+          labelFormatter={fmtTick as any}
+          formatter={(v: any) => [`${v}%`, 'SOC']}
+        />
+        <Area type="monotone" dataKey="soc" stroke="#c99318" strokeWidth={2} fill="url(#mob-soc-grad)" dot={false} isAnimationActive={false} connectNulls />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ── MobileFlow (2D solar-flow, cloned from LuxSolar portal) ──
 
 function MobileFlow({ metrics, config, deviceSn, lastSeenAt, theme, onThemeToggle, onConfigSaved }: PowerFlowProps) {
-  const [activeTab, setActiveTab]   = useState<'flow' | 'stats'>('flow');
+  const [activeTab, setActiveTab]     = useState<'flow' | 'battery' | 'stats'>('flow');
   const [trendPeriod, setTrendPeriod] = useState<TrendPeriod>('month');
   const [hiddenTrend, setHiddenTrend] = useState(new Set<string>());
+  const [hiddenToday, setHiddenToday] = useState(new Set<string>());
   const [selectedDate, setSelectedDate] = useState(() => new Date());
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen]   = useState(false);
+  const [activeMetric, setActiveMetric] = useState<any>(null);
+  const weather = useWeather();
 
   const chartData = useEnergyChart(deviceSn, selectedDate);
   const trendData = useTrendChart(deviceSn, trendPeriod);
 
+  const onMetric = (metric: string, label: string, unit: string, color: string) =>
+    setActiveMetric({ metric, label, unit, color });
   const toggleTrend = (k: string) =>
     setHiddenTrend(prev => { const s = new Set(prev); s.has(k) ? s.delete(k) : s.add(k); return s; });
+  const toggleToday = (k: string) =>
+    setHiddenToday(prev => { const s = new Set(prev); s.has(k) ? s.delete(k) : s.add(k); return s; });
 
-  const pv      = n(metrics.pvPower) || (n(metrics.pv1Power) + n(metrics.pv2Power));
+  const pv      = n(metrics.pvPower) || (n(metrics.pv1Power) + n(metrics.pv2Power) + n(metrics.pv3Power));
   const battery = n(metrics.batteryFlow);
   const grid    = n(metrics.gridFlow);
   const load    = n(metrics.loadPower) || Math.max(pv + grid + battery, 0);
   const invTotalIn  = pv + n(metrics.batteryDischargePower) + n(metrics.powerFromGrid);
   const invTotalOut = load + n(metrics.batteryChargePower) + n(metrics.epsPower);
   const inverterNet = invTotalIn - invTotalOut;
-  const soc         = n(metrics.batterySoc);
-  const isBatChg    = battery < -20;
-  const gridActive  = Math.abs(grid) > 10;
+  const soc          = n(metrics.batterySoc);
+  const isBatChg     = battery < 0;
+  const gridActive   = Math.abs(grid) > 10;
+  const gridConnected = n(metrics.gridVoltage) > 50 || gridActive;
   const batteryState = battery < 0 ? 'Charging' : battery > 0 ? 'Discharging' : 'Standby';
-  const lastSeen    = lastSeenAt ? new Date(lastSeenAt) : null;
-  const isOnline    = lastSeen ? (Date.now() - lastSeen.getTime() < 15_000) : false;
-  const homeEnergy  = n(metrics.homeConsumptionEnergyToday ?? metrics.loadEnergyToday);
+  const lastSeen     = lastSeenAt ? new Date(lastSeenAt) : null;
+  const isOnline     = lastSeen ? (Date.now() - lastSeen.getTime() < 15_000) : false;
+  const homeEnergy   = n(metrics.homeConsumptionEnergyToday ?? metrics.loadEnergyToday);
   const importEnergy = n(metrics.importEnergyToday);
-  const selfSufficiency = homeEnergy > 0 ? Math.max(0, Math.min(100, (1 - importEnergy / homeEnergy) * 100)) : 0;
+  const selfSufficiency = homeEnergy > 0 ? Math.max(0, Math.min(100, (1 - importEnergy / homeEnergy) * 100)) : 100;
+  const batteryPowerSigned = `${battery < 0 ? '+' : battery > 0 ? '-' : ''}${(Math.abs(battery) / 1000).toFixed(2)} kW`;
+  const inverterType = 'LUXPOWER';
 
-  return (
-    <div className="sf-mobile">
-      {/* Header */}
-      <div className="sfm-header">
-        <div className="left">
-          <h2>LUX LOCAL</h2>
-          <div className="sub">
-            <span className={`dot${isOnline ? ' online' : ''}`} />
-            <span>{isOnline ? 'Online' : 'Offline'} · {deviceSn || '--'}</span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="sfm-circle-btn" onClick={onThemeToggle} title="Toggle theme">
-            {theme === 'dark' ? '☀' : '◑'}
-          </button>
-          <button className="sfm-circle-btn" onClick={() => setConfigOpen(true)} title="Settings">
-            <Settings size={16} />
-          </button>
+  // PV strings → MPPT sub label
+  const activeStrings = [1, 2, 3]
+    .map(i => ({ v: n(metrics[`pv${i}Voltage`]), p: n(metrics[`pv${i}Power`]) }))
+    .filter(s => s.v > 0 || s.p > 0);
+  const pvSub = activeStrings.length === 0
+    ? 'No solar'
+    : activeStrings.length === 1
+      ? `${activeStrings[0].v.toFixed(0)} V`
+      : `${activeStrings.length} MPPT`;
+
+  const nav = (
+    <nav className="sfm-nav">
+      <button className={activeTab === 'flow' ? 'active' : ''} onClick={() => setActiveTab('flow')}>
+        <span className="icn"><span className="sq" /></span><span>Flow</span>
+      </button>
+      <button className={activeTab === 'battery' ? 'active' : ''} onClick={() => setActiveTab('battery')}>
+        <span className="icn"><span className="ci" /></span><span>Battery</span>
+      </button>
+      <button className={activeTab === 'stats' ? 'active' : ''} onClick={() => setActiveTab('stats')}>
+        <span className="icn"><span className="li"><b /><b /><b /></span></span><span>Stats</span>
+      </button>
+      <button onClick={() => setConfigOpen(true)}>
+        <span className="icn"><Settings size={16} /></span><span>Setup</span>
+      </button>
+    </nav>
+  );
+
+  const subHeader = (title: string, subtitle: any) => (
+    <div className="sfm-header">
+      <div className="left" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button className="sfm-circle-btn" onClick={() => setActiveTab('flow')} title="Back"><ChevronLeft size={16} /></button>
+        <div>
+          <h2>{title}</h2>
+          <div className="sub">{subtitle}</div>
         </div>
       </div>
+    </div>
+  );
 
-      {activeTab === 'flow' ? (
-        <>
-          {/* Live flow card */}
-          <div className="sfm-card flow-card" style={{ margin: '0 12px 16px' }}>
-            <div className="head">
-              <span>LIVE FLOW</span>
-              <small>
-                <span className={`dot${isOnline ? ' online' : ''}`} style={{ width: 6, height: 6 }} />
-                {isOnline ? 'Live' : 'Offline'}
-              </small>
+  let body: any;
+
+  if (activeTab === 'stats') {
+    body = (
+      <>
+        {subHeader('System Summary', 'Today · Live')}
+        <section className="sfm-stats-grid">
+          <div className="stat-card sol" onClick={() => onMetric('pvPower', 'Solar Output', 'W', '#38a34b')}>
+            <div className="icn">☀️</div>
+            <div className="main"><label>Solar</label><div className="vals"><strong>{fmt(metrics.pvEnergyToday, 1)}</strong><span><small>kWh today</small></span></div></div>
+          </div>
+          <div className="stat-card hom" onClick={() => onMetric('loadPower', 'Home Usage', 'W', '#d44728')}>
+            <div className="icn">🏠</div>
+            <div className="main"><label>Home</label><div className="vals"><strong>{fmt(metrics.homeConsumptionEnergyToday ?? metrics.loadEnergyToday, 1)}</strong><span><small>kWh today</small></span></div></div>
+          </div>
+          <div className="stat-card bat" onClick={() => onMetric('batteryFlow', 'Battery Flow', 'W', '#c99318')}>
+            <div className="icn">🔋</div>
+            <div className="main"><label>Battery Cycle</label><div className="vals"><strong>{fmt(metrics.batteryChargeEnergyToday, 1)}</strong><span>/ {fmt(metrics.batteryDischargeEnergyToday, 1)} <small>kWh</small></span></div></div>
+          </div>
+          <div className="stat-card grd" onClick={() => onMetric('gridFlow', 'Grid Flow', 'W', '#7f858a')}>
+            <div className="icn">🔌</div>
+            <div className="main"><label>Grid Import</label><div className="vals"><strong>{fmt(metrics.importEnergyToday, 1)}</strong><span><small>kWh today</small></span></div></div>
+          </div>
+          <div className="stat-card lif">
+            <div className="icn">↗️</div>
+            <div className="main"><label>Grid Export</label><div className="vals"><strong>{fmt(metrics.exportEnergyToday, 1)}</strong><span><small>kWh today</small></span></div></div>
+          </div>
+          <div className="stat-card self">
+            <div className="icn">✅</div>
+            <div className="main"><label>Self-Sufficiency</label><div className="vals"><strong className="green">{fmt(selfSufficiency, 0)}%</strong></div></div>
+          </div>
+        </section>
+      </>
+    );
+  } else if (activeTab === 'battery') {
+    body = (
+      <>
+        {subHeader('Battery', <><span className="dot battery" />{inverterType} · {batteryState} · {(Math.abs(battery) / 1000).toFixed(2)} kW</>)}
+        <section className="sfm-bat-hero">
+          <div className={`sfm-bat-large${isBatChg ? ' charging' : ''}`} style={{ '--soc': `${soc}%` } as any}>
+            <div className="fill" />
+            <div className="content">
+              <div className="val">{fmt(metrics.batterySoc)}</div>
+              <div className="lab">% SOC</div>
             </div>
-            <div className="vflow">
-              {/* PV */}
-              <div className="vnode pv">
-                <div className="gly sun"><Sun size={14} color="#fff" /></div>
-                <div>
-                  <div className="name">Solar</div>
-                  <div className="val">{Math.round(pv)}<span className="u"> W</span></div>
-                </div>
-                <div className="right">
-                  PV1 {fmt(metrics.pv1Voltage, 1)}V<br />
-                  PV2 {fmt(metrics.pv2Voltage, 1)}V
-                </div>
-              </div>
+          </div>
+          <div className="sfm-bat-grid">
+            <div className="item"><small>POWER</small><strong className="battery-c">{battery < 0 ? '+' : ''}{(Math.abs(battery) / 1000).toFixed(2)}<small>kW</small></strong></div>
+            <div className="item"><small>VOLTAGE</small><strong className="battery-c">{fmt(metrics.batteryVoltage, 1)}<small>V</small></strong></div>
+            <div className="item"><small>STATE</small><strong className="battery-c">{batteryState}</strong></div>
+          </div>
+        </section>
+        <section className="sfm-list">
+          {[
+            ['SOC',             `${fmt(metrics.batterySoc)} %`],
+            ['Voltage',         `${fmt(metrics.batteryVoltage, 1)} V`],
+            ['Power',           batteryPowerSigned],
+            ['State',           batteryState],
+            ['Charge Power',    `${fmt(metrics.batteryChargePower)} W`],
+            ['Discharge Power', `${fmt(metrics.batteryDischargePower)} W`],
+            ['Charge Today',    `${fmt(metrics.batteryChargeEnergyToday, 1)} kWh`],
+            ['Discharge Today', `${fmt(metrics.batteryDischargeEnergyToday, 1)} kWh`],
+          ].map(([k, v]) => (
+            <div key={k} className="sfm-list-row"><span>{k}</span><b>{v}</b></div>
+          ))}
+        </section>
+        <section className="sfm-bat-chart">
+          <div className="head">State of Charge · Today</div>
+          <MobileSocChart data={chartData} date={selectedDate} height={130} />
+        </section>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        {/* Header */}
+        <div className="sfm-header">
+          <div className="left">
+            <h2>LUX LOCAL</h2>
+            <div className="sub">
+              <span className={`dot${isOnline ? ' online' : ''}`} />
+              <span>{isOnline ? 'Online' : 'Offline'} · {deviceSn || '--'}</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="sfm-circle-btn" onClick={onThemeToggle} title="Toggle theme">
+              {theme === 'dark' ? '☀' : '◑'}
+            </button>
+            <button className="sfm-circle-btn" onClick={() => setConfigOpen(true)} title="Settings">
+              <Settings size={16} />
+            </button>
+          </div>
+        </div>
 
-              {/* Wire PV → Inverter */}
-              <div style={{ position: 'relative', height: 44 }}>
-                <svg width="100%" height="44" viewBox="0 0 300 44" preserveAspectRatio="none" style={{ display: 'block' }}>
-                  <line x1="150" y1="0" x2="150" y2="44" className={`wire ${pv > 0 ? 'solar' : 'idle'}`} />
-                  {pv > 0 && <line x1="150" y1="0" x2="150" y2="44" className="flow solar" />}
-                </svg>
-                <div className="conn solar" style={{ top: 12 }}>{(pv / 1000).toFixed(2)} kW</div>
-              </div>
+        {/* Weather strip */}
+        <div className="sf-weather-mini sfm-weather">
+          <WeatherGlyph code={weather?.code ?? 0} size={16} />
+          <div className="sf-wm-temp">
+            <div className="sf-wm-t">{weather ? weather.tempMax : '--'}<span className="sf-wm-deg">°C</span><span className="sf-wm-min">/{weather ? weather.tempMin : '--'}°</span></div>
+          </div>
+          <div className="sf-wm-sep" />
+          <div className="sf-wm-stat"><span className="k">Sunset</span><span className="v">{weather?.sunset ?? '--:--'}</span></div>
+          <div className="sf-wm-stat"><span className="k">UV</span><span className="v">{weather?.uv ?? '--'}</span></div>
+          <div className="sf-wm-stat"><span className="k">Irrad</span><span className="v">{weather ? `${weather.irr} kWh/m²` : '--'}</span></div>
+        </div>
 
-              {/* Inverter */}
-              <div className="vnode inv">
-                <div className="gly invg"><Zap size={14} color="#fff" /></div>
-                <div>
-                  <div className="name">Inverter</div>
-                  <div className="val">{fmt(inverterNet)}<span className="u"> W</span></div>
-                </div>
-                <div className="right">
-                  <span className="badge">{metrics.inverterState || 'NORMAL'}</span>
-                </div>
-              </div>
+        {/* Hero row: Producing / Using / Battery */}
+        <section className="sfm-card main-card" style={{ margin: '0 12px 12px' }}>
+          <div className="sfm-main-row">
+            <div className="sfm-main-pv" onClick={() => onMetric('pvPower', 'Solar Output', 'W', '#38a34b')}>
+              <small>Producing now</small>
+              <strong className="solar-c">{(pv / 1000).toFixed(2)}<span>kW</span></strong>
+            </div>
+            <div className="sfm-main-sep" />
+            <div className="sfm-main-item" onClick={() => onMetric('loadPower', 'Home Usage', 'W', '#d44728')}>
+              <small>Using</small>
+              <strong className="load-c">{(load / 1000).toFixed(2)}<span>kW</span></strong>
+            </div>
+            <div className="sfm-main-item" onClick={() => onMetric('batteryFlow', 'Battery Bank', 'W', '#c99318')}>
+              <small>Battery</small>
+              <strong className="battery-c">{battery < 0 ? '+' : ''}{(Math.abs(battery) / 1000).toFixed(2)}<span>kW</span></strong>
+            </div>
+          </div>
+        </section>
 
-              {/* Wire Inverter → 3-way split */}
-              <div style={{ position: 'relative', height: 60 }}>
-                <svg width="100%" height="60" viewBox="0 0 300 60" preserveAspectRatio="none" style={{ display: 'block' }}>
-                  <line x1="50" y1="0" x2="250" y2="0" className="wire idle" />
-                  <line x1="150" y1="0" x2="150" y2="4" className="wire idle" />
-                  <line x1="50" y1="0" x2="50" y2="60" className={`wire ${batteryState !== 'Standby' ? 'battery' : 'idle'}`} />
-                  <line x1="150" y1="0" x2="150" y2="60" className={`wire ${load > 0 ? 'load' : 'idle'}`} />
-                  <line x1="250" y1="0" x2="250" y2="60" className={`wire ${gridActive ? 'grid' : 'idle'}`} />
-                  {batteryState !== 'Standby' && <line x1="50" y1="0" x2="50" y2="60" className={`flow battery${battery < 0 ? ' reverse' : ''}`} />}
-                  {load > 0 && <line x1="150" y1="0" x2="150" y2="60" className="flow load" />}
-                  {gridActive && <line x1="250" y1="0" x2="250" y2="60" className={`flow grid${grid > 0 ? ' reverse' : ''}`} />}
-                </svg>
-              </div>
+        {/* Summary strip */}
+        <section className="sfm-summary">
+          <div className="item" onClick={() => onMetric('pvPower', 'Solar', 'W', '#38a34b')}>
+            <span>Solar</span><strong className="solar-c">{fmt(metrics.pvEnergyToday, 1)}<small>kWh</small></strong>
+          </div>
+          <div className="item" onClick={() => onMetric('loadPower', 'Use', 'W', '#d44728')}>
+            <span>Use</span><strong className="load-c">{fmt(metrics.homeConsumptionEnergyToday ?? metrics.loadEnergyToday, 1)}<small>kWh</small></strong>
+          </div>
+          <div className="item" onClick={() => onMetric('batterySoc', 'Battery SOC', '%', '#06b6d4')}>
+            <span>Bat %</span><strong className="battery-c">{fmt(metrics.batterySoc)}</strong>
+          </div>
+          <div className="item" onClick={() => onMetric('gridFlow', 'Grid', 'W', '#7f858a')}>
+            <span>Grid</span><strong style={{ color: 'var(--sf-idle)' }}>{fmt(metrics.importEnergyToday, 1)}<small>kWh</small></strong>
+          </div>
+        </section>
 
-              {/* Bottom 3 nodes */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
-                <div className="vnode bat" style={{ gridTemplateColumns: 'auto 1fr' }}>
-                  <div className="gly batg" style={{ '--soc': `${soc}%` } as any}>
-                    <div className={`fill${isBatChg ? ' charging' : ''}`} />
-                  </div>
-                  <div>
-                    <div className="name">Battery</div>
-                    <div className="val" style={{ fontSize: 14 }}>{soc}<span className="u">%</span></div>
-                    <div style={{ fontSize: 9, color: 'var(--sf-ink-3)' }}>{batteryState}</div>
-                  </div>
-                </div>
-                <div className="vnode load" style={{ gridTemplateColumns: 'auto 1fr' }}>
-                  <div className="gly houseg" />
-                  <div>
-                    <div className="name">Home</div>
-                    <div className="val" style={{ fontSize: 14 }}>{(load / 1000).toFixed(1)}<span className="u">kW</span></div>
-                  </div>
-                </div>
-                <div className="vnode gridn" style={{ gridTemplateColumns: 'auto 1fr' }}>
-                  <div className="gly towerg" />
-                  <div>
-                    <div className="name">Grid</div>
-                    <div className="val" style={{ fontSize: 14 }}>{(Math.abs(grid) / 1000).toFixed(1)}<span className="u">kW</span></div>
-                    <div style={{ fontSize: 9, color: 'var(--sf-ink-3)' }}>{grid > 0 ? 'Export' : grid < 0 ? 'Import' : 'Idle'}</div>
-                  </div>
-                </div>
+        {/* Live 2D flow */}
+        <section className="sfm-card flow-card" style={{ margin: '0 12px 12px' }}>
+          <div className="head">
+            <span className="title">LIVE FLOW</span>
+            <small>
+              <span className={`dot${isOnline ? ' online' : ''}`} style={{ width: 6, height: 6 }} />
+              {isOnline ? 'Real-time' : 'Offline'}
+            </small>
+          </div>
+          <div className="vflow2d">
+            <svg className="wires2d" viewBox="0 0 300 320" preserveAspectRatio="none">
+              <path className={`wire ${pv > 0 ? 'solar' : 'idle'}`} d="M 150 43 L 150 160" />
+              {pv > 0 && <path className="flow solar" d="M 150 43 L 150 160" />}
+              <path className={`wire ${battery === 0 ? 'idle' : 'battery'}`} d="M 43 160 L 150 160" />
+              {battery !== 0 && <path className={`flow battery${battery < 0 ? ' reverse' : ''}`} d="M 43 160 L 150 160" />}
+              <path className={`wire ${load > 0 ? 'load' : 'idle'}`} d="M 150 160 L 256 160" />
+              {load > 0 && <path className="flow load fast" d="M 150 160 L 256 160" />}
+              <path className={`wire ${gridConnected && grid !== 0 ? 'grid' : 'idle'}`} d="M 150 160 L 150 277" />
+              {gridConnected && grid !== 0 && <path className={`flow grid${grid > 0 ? ' reverse' : ''}`} d="M 150 160 L 150 277" />}
+              <circle cx="150" cy="160" r="3" fill="#fff" stroke="var(--sf-ink-3)" strokeWidth="1.2" />
+            </svg>
+
+            <div className="vnode v2 pv" onClick={() => onMetric('pvPower', 'Solar Output', 'W', '#38a34b')}>
+              <div className="gly sun" />
+              <div className="name">Solar</div>
+              <div className="val">{(pv / 1000).toFixed(2)}<span className="u">kW</span></div>
+              <div className="sub">{pvSub}</div>
+            </div>
+
+            <div className="vnode v2 bat" onClick={() => onMetric('batteryFlow', 'Battery Bank', 'W', '#c99318')}>
+              <div className={`gly batg${isBatChg ? ' charging' : ''}`} style={{ '--soc': `${soc}%` } as any}>
+                <div className="fill" />
+              </div>
+              <div className="name">Battery</div>
+              <div className="val" style={{ color: 'var(--sf-battery)' }}>{battery < 0 ? '+' : ''}{(battery / -1000).toFixed(2)}<span className="u">kW</span></div>
+              <div className="sub">
+                <span className="sf-clickable-val" onClick={e => { e.stopPropagation(); onMetric('batterySoc', 'Battery SOC', '%', '#06b6d4'); }}>{fmt(metrics.batterySoc)}%</span> · {batteryState}
+              </div>
+            </div>
+
+            <div className="vnode v2 inv" onClick={() => onMetric('loadPower', 'Inverter Power', 'W', '#5ba4d4')}>
+              <div className="name">{inverterType}</div>
+              <div className="val">{fmt(inverterNet)}<span className="u">W</span></div>
+              <div className="pbar"><span style={{ width: `${Math.max(6, Math.min(100, pv / 80))}%` }} /></div>
+              <div className="sub">DC {fmt(metrics.dcDcTemperature)}° · AC {fmt(metrics.inverterTemperature)}°</div>
+            </div>
+
+            <div className="vnode v2 load" onClick={() => onMetric('loadPower', 'Home Usage', 'W', '#d44728')}>
+              <div className="gly houseg" />
+              <div className="name">Home</div>
+              <div className="val" style={{ color: 'var(--sf-load)' }}>{(load / 1000).toFixed(2)}<span className="u">kW</span></div>
+              <div className="sub">Essential</div>
+            </div>
+
+            <div className="vnode v2 gridn" onClick={() => onMetric('gridFlow', 'Grid Flow', 'W', '#7f858a')}>
+              <div className={`gly towerg${grid === 0 ? '' : ' active'}`} />
+              <div className="name">Grid</div>
+              <div className="val" style={{ color: grid === 0 ? 'var(--sf-ink-3)' : 'var(--sf-idle)' }}>{Math.abs(Math.round(grid))}<span className="u">W</span></div>
+              <div className="sub">
+                {gridConnected ? (
+                  <>
+                    <span className="sf-clickable-val" onClick={e => { e.stopPropagation(); onMetric('gridFlow', 'Grid Voltage', 'V', '#7f858a'); }}>{fmt(metrics.gridVoltage, 0)}V</span> · {fmt(metrics.gridFrequency, 2)}Hz
+                  </>
+                ) : 'Offline'}
               </div>
             </div>
           </div>
+        </section>
 
-          {/* Today chart */}
-          <section className="sfm-chart-card">
-            <div className="sfm-chart-head">
-              <span className="sfm-chart-title">Energy · Today</span>
-              <div style={{ display: 'flex', gap: 4 }}>
-                <button className="sf-nav-day-btn" onClick={() => setSelectedDate(d => addDays(d, -1))}><ChevronLeft size={12} /></button>
-                <input
-                  type="date" className="sf-date-input"
-                  value={dateStr(selectedDate)} max={dateStr(new Date())}
-                  onChange={e => { const [y, m, d] = e.target.value.split('-').map(Number); setSelectedDate(new Date(y, m - 1, d)); }}
-                />
-                <button className="sf-nav-day-btn" onClick={() => setSelectedDate(d => addDays(d, 1))} disabled={isToday(selectedDate)}><ChevronRight size={12} /></button>
-              </div>
+        {/* Today chart */}
+        <section className="sfm-chart-card">
+          <div className="sfm-chart-head">
+            <span className="sfm-chart-title">Energy · Today</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button className="sf-nav-day-btn" onClick={() => setSelectedDate(d => addDays(d, -1))}><ChevronLeft size={12} /></button>
+              <input
+                type="date" className="sf-date-input"
+                value={dateStr(selectedDate)} max={dateStr(new Date())}
+                onChange={e => { const [y, m, d] = e.target.value.split('-').map(Number); setSelectedDate(new Date(y, m - 1, d)); }}
+              />
+              <button className="sf-nav-day-btn" onClick={() => setSelectedDate(d => addDays(d, 1))} disabled={isToday(selectedDate)}><ChevronRight size={12} /></button>
             </div>
-            <EnergyHistoryChart data={chartData} date={selectedDate} height={200} />
-          </section>
-
-          {/* Trend chart */}
-          <section className="sfm-chart-card">
-            <div className="sfm-chart-head">
-              <span className="sfm-chart-title">Energy History · Trend</span>
-              <div className="sf-period-toggle">
-                {(['day', 'month', 'year'] as TrendPeriod[]).map(p => (
-                  <button key={p} className={trendPeriod === p ? 'active' : ''} onClick={() => setTrendPeriod(p)}>
-                    {p === 'day' ? 'Day' : p === 'month' ? 'Month' : 'Year'}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <TrendChart data={trendData} period={trendPeriod} hiddenSeries={hiddenTrend} onToggle={toggleTrend} height={240} />
-          </section>
-        </>
-      ) : (
-        /* STATS tab */
-        <div className="sfm-card summary-card" style={{ margin: '0 12px 16px' }}>
-          <div className="sfm-list no-pad">
+          </div>
+          <div className="sf-now-strip" style={{ margin: '0 0 8px' }}>
             {[
-              { label: 'Solar Output',    val: `${fmt(metrics.pvEnergyToday, 1)} kWh`,                 color: 'var(--sf-solar)'   },
-              { label: 'Home Usage',      val: `${fmt(metrics.loadEnergyToday, 1)} kWh`,               color: 'var(--sf-load)'    },
-              { label: 'Bat Charge',      val: `${fmt(metrics.batteryChargeEnergyToday, 1)} kWh`,      color: 'var(--sf-battery)' },
-              { label: 'Bat Discharge',   val: `${fmt(metrics.batteryDischargeEnergyToday, 1)} kWh`,   color: 'var(--sf-battery)' },
-              { label: 'Grid Import',     val: `${fmt(metrics.importEnergyToday, 1)} kWh`,             color: 'var(--sf-idle)'    },
-              { label: 'Grid Export',     val: `${fmt(metrics.exportEnergyToday, 1)} kWh`,             color: 'var(--sf-solar)'   },
-              { label: 'Self-Sufficiency',val: `${fmt(selfSufficiency, 0)}%`,                          color: 'var(--sf-solar)'   },
-            ].map(row => (
-              <div key={row.label} className="sfm-list-row">
-                <span>{row.label}</span>
-                <b style={{ color: row.color }}>{row.val}</b>
+              { key: 'solar',   label: 'Solar',   color: 'var(--sf-solar)'   },
+              { key: 'battery', label: 'Battery', color: 'var(--sf-battery)' },
+              { key: 'load',    label: 'Home',    color: 'var(--sf-load)'    },
+              { key: 'grid',    label: 'Grid',    color: 'var(--sf-idle)'    },
+              { key: 'soc',     label: 'SOC',     color: '#06b6d4'           },
+            ].map(item => (
+              <div key={item.key} className={`sf-ns-item${hiddenToday.has(item.key) ? ' dim' : ''}`} style={{ cursor: 'pointer', flex: 1 }} onClick={() => toggleToday(item.key)}>
+                <div className="k"><span className="dotsq" style={{ background: item.color }} />{item.label}</div>
               </div>
             ))}
           </div>
-        </div>
-      )}
+          <EnergyHistoryChart data={chartData} hiddenSeries={hiddenToday} date={selectedDate} height={200} />
+        </section>
 
-      {/* Bottom nav */}
-      <nav className="sfm-nav">
-        <button className={activeTab === 'flow' ? 'active' : ''} onClick={() => setActiveTab('flow')}>
-          <span className="icn"><span className="sq" /></span>
-          <span>Flow</span>
-        </button>
-        <button className={activeTab === 'stats' ? 'active' : ''} onClick={() => setActiveTab('stats')}>
-          <span className="icn"><span className="li"><b /><b /><b /></span></span>
-          <span>Stats</span>
-        </button>
-        <button onClick={() => setConfigOpen(true)}>
-          <span className="icn"><Settings size={16} /></span>
-          <span>Setup</span>
-        </button>
-      </nav>
+        {/* Trend chart */}
+        <section className="sfm-chart-card">
+          <div className="sfm-chart-head">
+            <span className="sfm-chart-title">Energy History · Trend</span>
+            <div className="sf-period-toggle">
+              {(['day', 'month', 'year'] as TrendPeriod[]).map(p => (
+                <button key={p} className={trendPeriod === p ? 'active' : ''} onClick={() => setTrendPeriod(p)}>
+                  {p === 'day' ? 'Day' : p === 'month' ? 'Month' : 'Year'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <TrendChart data={trendData} period={trendPeriod} hiddenSeries={hiddenTrend} onToggle={toggleTrend} height={240} />
+        </section>
+      </>
+    );
+  }
+
+  return (
+    <div className={`sf-mobile${activeTab === 'stats' ? ' stats-view' : activeTab === 'battery' ? ' bat-view' : ''}`}>
+      {body}
+      {nav}
 
       {configOpen && (
         <ConfigModal config={config} onClose={() => setConfigOpen(false)} onSaved={() => { onConfigSaved(); setConfigOpen(false); }} />
+      )}
+      {activeMetric && (
+        <MetricModal deviceSn={deviceSn} metric={activeMetric} onClose={() => setActiveMetric(null)} />
       )}
     </div>
   );

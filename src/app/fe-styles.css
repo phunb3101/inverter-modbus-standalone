@@ -3550,6 +3550,48 @@ body:has(.dashboard) {
 
   @keyframes sf-dash { to { stroke-dashoffset: -48; } }
 
+  /* ── Main card (Producing / Using / Battery hero row) ── */
+  .sfm-card.main-card { padding: 10px 14px; }
+  .sfm-main-row { display: flex; align-items: center; gap: 12px; }
+  .sfm-main-pv { display: flex; flex-direction: column; flex: 1; min-width: 0; cursor: pointer; }
+  .sfm-main-pv small { display: block; font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--sf-ink-3); }
+  .sfm-main-pv strong { font-size: 24px; font-weight: 800; line-height: 1; letter-spacing: -0.03em; margin-top: 1px; }
+  .sfm-main-pv strong span { margin-left: 2px; font-size: 12px; font-weight: 600; opacity: 0.45; }
+  .sfm-main-sep { width: 1px; height: 30px; flex-shrink: 0; background: var(--sf-line-2); }
+  .sfm-main-item { display: flex; flex-direction: column; align-items: center; min-width: 58px; cursor: pointer; }
+  .sfm-main-item small { display: block; font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sf-ink-3); margin-bottom: 2px; }
+  .sfm-main-item strong { font-size: 15px; font-weight: 700; line-height: 1; }
+  .sfm-main-item strong span { margin-left: 1px; font-size: 9px; font-weight: 600; opacity: 0.45; }
+
+  /* ── Summary strip (4 columns) ── */
+  .sfm-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 0 16px 14px; }
+  .sfm-summary .item { background: var(--sf-panel); border: 1px solid var(--sf-line-2); border-radius: 8px; padding: 8px 6px; text-align: center; cursor: pointer; }
+  .sfm-summary span { display: block; font-size: 9px; font-weight: 700; color: var(--sf-ink-3); margin-bottom: 4px; }
+  .sfm-summary strong { font-size: 16px; font-weight: 700; }
+  .sfm-summary strong small { font-size: 10px; font-weight: 600; opacity: 0.5; margin-left: 1px; }
+
+  /* ── 2D cross power flow (PV top · Battery left · Inverter center · Home right · Grid bottom) ── */
+  .vflow2d { position: relative; display: grid; grid-template-rows: 86px 100px 86px; grid-template-columns: 1fr 1.15fr 1fr; place-items: center stretch; gap: 24px 14px; padding: 4px 0 2px; }
+  .vflow2d .wires2d { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+  .vnode.v2 { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 2px; width: 100%; height: 100%; padding: 8px 5px; text-align: center; border-radius: 8px; cursor: pointer; }
+  .v2.pv { grid-area: 1 / 2 / 2 / 3; }
+  .v2.bat { grid-area: 2 / 1 / 3 / 2; }
+  .v2.inv { grid-area: 2 / 2 / 3 / 3; }
+  .v2.load { grid-area: 2 / 3 / 3 / 4; }
+  .v2.gridn { grid-area: 3 / 2 / 4 / 3; }
+  .vnode.v2 .gly { margin: 0 0 3px; }
+  .vnode.v2 .name { font-size: 8.5px; }
+  .vnode.v2 .val { margin-top: 0; font-size: 14px; line-height: 1.05; }
+  .vnode.v2 .val .u { font-size: 8.5px; }
+  .vnode.v2 .sub { font-family: "JetBrains Mono", monospace; font-size: 8.5px; line-height: 1.25; color: var(--sf-ink-3); }
+  .vnode.v2.inv .sub { color: rgba(255, 255, 255, 0.6); }
+  .vnode.v2.inv .val .u { color: rgba(255, 255, 255, 0.55); }
+  .vnode.v2.inv .pbar { width: 76%; height: 3px; margin: 2px 0; background: rgba(255, 255, 255, 0.16); border-radius: 2px; overflow: hidden; }
+  .vnode.v2.inv .pbar > span { display: block; height: 100%; background: var(--sf-solar); transition: width 0.4s; }
+
+  .sf-clickable-val { cursor: pointer; }
+  .sf-clickable-val:hover { text-decoration: underline; text-underline-offset: 2px; }
+
   /* ── Battery View ── */
   .sfm-bat-hero {
     background: var(--sf-panel);
